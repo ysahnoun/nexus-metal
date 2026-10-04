@@ -1,23 +1,35 @@
 import { NextResponse } from "next/server";
+import { Resend } from "resend";
 import { db } from "@/db";
 import { orderItems, orders, products } from "@/db/schema";
 import { orderNumber } from "@/lib/format";
 import { ensureSeed } from "@/lib/ensure-seed";
-import { desc, eq, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
-type CartInput = { slug: string; qty: number };
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-
-export async function GET() {
-  const rows = await db.select().from(orders).orderBy(desc(orders.createdAt)).limit(50);
-  return NextResponse.json({ orders: rows });
-}
+type CartInput = {
+  slug: string;
+  qty: number;
+};
 
 export async function POST(req: Request) {
   try {
     await ensureSeed();
+
     const body = await req.json();
-    const { customerName, email, phone, address, city, postalCode, country, notes, cart } = body as {
+
+    const {
+      customerName,
+      email,
+      phone,
+      address,
+      city,
+      postalCode,
+      country,
+      notes,
+      cart,
+    } = body as {
       customerName?: string;
       email?: string;
       phone?: string;
@@ -30,33 +42,83 @@ export async function POST(req: Request) {
     };
 
     if (!customerName || !email) {
-      return NextResponse.json({ error: "Nom et adresse e-mail requis." }, { status: 400 });
-    }
-    if (!cart || !Array.isArray(cart) || cart.length === 0) {
-      return NextResponse.json({ error: "Votre panier est vide." }, { status: 400 });
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return NextResponse.json({ error: "Adresse e-mail invalide." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Nom et adresse e-mail requis." },
+        { status: 400 }
+      );
     }
 
-    const slugs = [...new Set(cart.map((c) => c.slug))];
-    const dbProducts = await db.select().from(products).where(inArray(products.slug, slugs));
-    const bySlug = new Map(dbProducts.map((p) => [p.slug, p]));
+    if (!cart || !Array.isArray(cart) || cart.length === 0) {
+      return NextResponse.json(
+        { error: "Votre panier est vide." },
+        { status: 400 }
+      );
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return NextResponse.json(
+        { error: "Adresse e-mail invalide." },
+        { status: 400 }
+      );
+    }
+
+    const slugs = [...new Set(cart.map((item) => item.slug))];
+
+    const dbProducts = await db
+      .select()
+      .from(products)
+      .where(inArray(products.slug, slugs));
+
+    const bySlug = new Map(dbProducts.map((product) => [product.slug, product]));
 
     let subtotal = 0;
-    const lines: { productId: string | null; name: string; slug: string; unit: number; qty: number; image: string }[] = [];
+
+    const lines: {
+      productId: string | null;
+      name: string;
+      slug: string;
+      unit: number;
+      qty: number;
+      image: string;
+    }[] = [];
+
     for (const item of cart) {
-      const p = bySlug.get(item.slug);
-      const qty = Math.max(1, Math.min(99, Math.floor(Number(item.qty) || 1)));
-      if (!p) continue;
-      if ((p.stock ?? 0) < qty) {
-        return NextResponse.json({ error: `Stock insuffisant pour « ${p.name} » (reste ${p.stock}).` }, { status: 400 });
+      const product = bySlug.get(item.slug);
+      const qty = Math.max(
+        1,
+        Math.min(99, Math.floor(Number(item.qty) || 1))
+      );
+
+      if (!product) {
+        continue;
       }
-      subtotal += p.priceCents * qty;
-      lines.push({ productId: p.id, name: p.name, slug: p.slug, unit: p.priceCents, qty, image: p.imageUrl });
+
+      if ((product.stock ?? 0) < qty) {
+        return NextResponse.json(
+          {
+            error: `Stock insuffisant pour « ${product.name} » (reste ${product.stock}).`,
+          },
+          { status: 400 }
+        );
+      }
+
+      subtotal += product.priceCents * qty;
+
+      lines.push({
+        productId: product.id,
+        name: product.name,
+        slug: product.slug,
+        unit: product.priceCents,
+        qty,
+        image: product.imageUrl,
+      });
     }
+
     if (lines.length === 0) {
-      return NextResponse.json({ error: "Produits introuvables." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Produits introuvables." },
+        { status: 400 }
+      );
     }
 
     const shipping = 0;
@@ -83,28 +145,55 @@ export async function POST(req: Request) {
       })
       .returning();
 
-    for (const l of lines) {
+    for (const line of lines) {
       await db.insert(orderItems).values({
         orderId: order.id,
-        productId: l.productId,
-        productName: l.name,
-        productSlug: l.slug,
-        unitPriceCents: l.unit,
-        quantity: l.qty,
-        imageUrl: l.image,
+        productId: line.productId,
+        productName: line.name,
+        productSlug: line.slug,
+        unitPriceCents: line.unit,
+        quantity: line.qty,
+        imageUrl: line.image,
       });
-      const prod = bySlug.get(l.slug);
-      if (prod) {
+
+      const product = bySlug.get(line.slug);
+
+      if (product) {
         await db
           .update(products)
-          .set({ stock: Math.max(0, (prod.stock ?? 0) - l.qty) })
-          .where(eq(products.id, prod.id));
+          .set({
+            stock: Math.max(0, (product.stock ?? 0) - line.qty),
+          })
+          .where(eq(products.id, product.id));
       }
     }
 
+    await resend.emails.send({
+      from: "onboarding@resend.dev",
+      to: process.env.ORDER_EMAIL!,
+      subject: `Nouvelle commande ${order.orderNumber}`,
+      html: `
+        <h2>Nouvelle commande Nexus Metal</h2>
+
+        <p><strong>Numéro :</strong> ${order.orderNumber}</p>
+        <p><strong>Client :</strong> ${order.customerName}</p>
+        <p><strong>E-mail :</strong> ${order.email}</p>
+        <p><strong>Téléphone :</strong> ${order.phone || "Non indiqué"}</p>
+        <p><strong>Adresse :</strong> ${order.address}</p>
+        <p><strong>Ville :</strong> ${order.city}</p>
+        <p><strong>Pays :</strong> ${order.country}</p>
+        <p><strong>Total :</strong> ${(order.totalCents / 100).toFixed(2)} DT</p>
+        <p><strong>Notes :</strong> ${order.notes || "Aucune"}</p>
+      `,
+    });
+
     return NextResponse.json({ order }, { status: 201 });
-  } catch (e) {
-    console.error(e);
-    return NextResponse.json({ error: "Impossible de créer la commande." }, { status: 500 });
+  } catch (error) {
+    console.error(error);
+
+    return NextResponse.json(
+      { error: "Impossible de créer la commande." },
+      { status: 500 }
+    );
   }
 }
