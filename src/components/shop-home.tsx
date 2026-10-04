@@ -103,7 +103,7 @@ export default function ShopHome({ initialProducts }: { initialProducts: Product
             <a href="#structures" className="hover:text-sky-400">Abris & Charpentes</a>
             <a href="#atelier" className="hover:text-sky-400">L'atelier</a>
             <a href="#faq" className="hover:text-sky-400">FAQ</a>
-            <Link href="/admin" className="hover:text-sky-400">Espace pro</Link>
+            
           </nav>
           <div className="ml-auto flex items-center gap-2">
             <div className="hidden items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-2 md:flex">
@@ -400,7 +400,7 @@ export default function ShopHome({ initialProducts }: { initialProducts: Product
               <li><a href="#atelier" className="hover:text-sky-400">Notre méthode</a></li>
               <li><a href="#structures" className="hover:text-sky-400">Nos réalisations</a></li>
               <li><a href="#faq" className="hover:text-sky-400">FAQ</a></li>
-              <li><Link href="/admin" className="hover:text-sky-400">Espace pro</Link></li>
+              
             </ul>
           </div>
           <div>
